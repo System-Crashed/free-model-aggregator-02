@@ -117,6 +117,11 @@ const catalog: CatalogReport = buildCatalog(brief);
 /** Which prompt row the request now arriving is: the brief's prompts are in the client's arrival order. */
 let manifestIndex = 0;
 
+/**
+ * log — one line to stderr, prefixed, for the trial run's trace.
+ * The server logs its listening port, the register result and the trial's
+ * prompt count, so a run can be followed from stderr alone.
+ */
 function log(message: string): void {
   process.stderr.write(`aggregator: ${message}\n`);
 }
