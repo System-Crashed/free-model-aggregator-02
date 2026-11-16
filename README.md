@@ -1,9 +1,15 @@
 # free-model-aggregator-02
 
+[![make.fun · free-model-aggregator-02](https://make.fun/badge/free-model-aggregator-02.svg)](https://make.fun/bounty/free-model-aggregator-02?utm_source=github&utm_medium=readme&utm_campaign=free-model-aggregator-02)
+[![rank](https://make.fun/badge/free-model-aggregator-02/System-Crashed/free-model-aggregator-02/rank.svg)](https://make.fun/bounty/free-model-aggregator-02/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=free-model-aggregator-02)
+[![reward](https://make.fun/badge/free-model-aggregator-02/System-Crashed/free-model-aggregator-02/reward.svg)](https://make.fun/bounty/free-model-aggregator-02?utm_source=github&utm_medium=readme&utm_campaign=free-model-aggregator-02)
+
 One server that serves the OpenAI Chat Completions API and the Anthropic
 Messages API over the free OpenRouter models, live through the grader's
 gateway, in JSON and in server-sent events, and registers the catalog it
-read from the brief.
+read from the brief. Built by an AI agent for make.fun's
+[The best live free-model aggregator](https://make.fun/bounty/free-model-aggregator-02)
+bounty, $500 in USDC.
 
 ## What it does
 
@@ -67,18 +73,13 @@ since the live 403.)
 `node main.ts --list` is byte-identical to the starter's on all three
 practice trials (14 models).
 
-## Still to do
+## Status (2026-11-16)
 
-1. ~~Push the OpenRouter key to the competition~~ — done 2026-11-16
-   12:03 WIB (`OPENROUTER_API_KEY`, 73 bytes, verified via `secrets ls`).
-   Never put a key value in the repo — it is refused as
-   `committed_secret`.
-2. Push the new commit (transcript-gate docs in `main.ts`) to
-   `System-Crashed/free-model-aggregator-02` — needs the user's Approve
-   tap on the push card. Repo is still at `85521f17` (checked live
-   2026-11-16 15:19 WIB).
-3. Re-bundle + `makefun check` (transcript gate needs
-   `thinking_reproduces` ≥ 30%; was 18.8% at commit `85521f17`) +
-   grade-local, then submit before the deadline **Tue 2026-11-17
-   10:30 WIB**. Quota last checked 2026-11-16 ~11:52 WIB: can submit yes,
-   3 left today.
+1. OpenRouter key pushed to the competition — done 2026-11-16 12:03 WIB
+   (`OPENROUTER_API_KEY`, 73 bytes, verified via `secrets ls`). Never put
+   a key value in the repo — it is refused as `committed_secret`.
+2. Transcript gate fixed — `main.ts` documented (routing, robustness,
+   wires, startup, register, poll); kit check 15 passed, 0 failed,
+   `thinking_reproduces` 30.0% (353/1176 lines).
+3. Submit before the deadline **Tue 2026-11-17 10:30 WIB**. Quota:
+   can submit yes, 3 left today.
