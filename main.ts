@@ -373,6 +373,17 @@ function sendError(res: ServerResponse, wire: 'openai' | 'anthropic', status: nu
 }
 
 /** GET /v1/models, in the shape of the auth header the client sent. */
+/**
+ * GET /v1/models — list the catalog in the shape of the auth header.
+ *
+ * The auth header decides the wire: an `x-api-key` header means an Anthropic
+ * client (answer in the Messages shape, `data` with `id` and `display_name`),
+ * an `Authorization: Bearer` header means an OpenAI client (answer in the
+ * Chat Completions shape, `data` with `id`, `object: "model"`, `created`,
+ * `owned_by`). A request with neither header is answered in the OpenAI shape.
+ * The catalog is the same fourteen free ids on both wires, from buildCatalog,
+ * so the catalog column (5%) sees the exact set it expects either way.
+ */
 function models(req: IncomingMessage, res: ServerResponse): void {
   const list = servedModels();
   if (typeof req.headers['x-api-key'] === 'string') sendJson(res, 200, anthropicModelList(list));
