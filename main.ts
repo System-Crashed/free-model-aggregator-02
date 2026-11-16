@@ -51,9 +51,11 @@
 //       first would burn one extra gateway call per non-JSON prompt (10 calls instead of 6)
 //       and lose the fewer-calls tie-break.
 //     - fallback order by rating: nemotron-3-ultra (1285), nemotron-3.5-lightning (1221),
-//       gemma-4-31b (1210), then the 1150s. Super-VL on all 6 prompts = quality 91.25,
-//       score 95 (6 calls), which beats the leaderboard's top tie of 94. Ultra + Super-VL
-//       = quality 90 / score 94, exactly that tie.
+//       gemma-4-31b (1210), then the 1150s. Super-VL on all 6 prompts = quality 90,
+//       score 94 (6 calls), tying the leaderboard's top tie of 94 (earned 10424, bound
+//       11456, quality floor(90.99)=90). Ultra + Super-VL = quality 90 / score 94, the
+//       same tie. Score 94 is the ceiling without inkling (blocked); the edge is
+//       robustness in the final's 3 trials, not a higher single-trial score.
 //   Failover (10%): a 429/5xx refusal is retried once on the same model, then the prompt moves
 //   to the next candidate (max 4 distinct models per prompt). A model that refuses twice is
 //   exhausted for the rest of the trial. A 401/400 is not a model refusal: the prompt is given
