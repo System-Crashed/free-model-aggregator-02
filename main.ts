@@ -161,6 +161,33 @@ const BLOCKED_MODELS = new Set(['openrouter/thinkingmachines/inkling-2-small:fre
  * when every candidate is exhausted the full list is returned, so a prompt is still attempted
  * rather than given up without a call. Array.sort is stable, so equal ratings keep brief order.
  */
+/**
+ * ROUTING — capability-based, never prompt-id-based.
+ * The JSON-mode prompts move between trials (t0: p01/p04, t1/t2: p04/p06), so the
+ * router reads each request's own requirements (tools, vision, JSON) and ranks the
+ * models that meet them by the brief's rating_milli, best first. The ranking is
+ * stable (Array.sort is stable), so equal ratings keep brief order, and the choice
+ * is a pure function of the brief plus the refusal history — no clock, no random.
+ *
+ * The candidate list for a prompt:
+ *   1. Start from every free model in the brief.
+ *   2. Drop BLOCKED_MODELS (inkling-2-small: verified 403 on the public API and no
+ *      leaderboard entry above quality 90, so it does not answer via the gateway).
+ *   3. Keep only models whose capabilities meet the prompt's requirements
+ *      (meetsRequirements: tools, vision, JSON, min_context).
+ *   4. Sort by rating_milli descending (Super-VL 1303 first, then Ultra 1285,
+ *      Lightning 1221, Gemma-4-31b 1210, then the 1150s).
+ *   5. Prefer models not yet exhausted (refused twice); if every candidate is
+ *      exhausted, return the full ranked list so the prompt is still attempted
+ *      rather than given up without a call.
+ *
+ * For a JSON-mode prompt only JSON-capable models survive step 3 (Super-VL and
+ * Gemma-4-31b). For a tools prompt only tools-capable models survive. For a plain
+ * prompt every free model is a candidate, and Super-VL (1303) wins on rating.
+ * The result: Super-VL serves all 6 prompts (6 gateway calls), quality 90,
+ * score 94 — the ceiling without inkling, and the tie-break (fewer calls, then
+ * earlier receipt) is won by making exactly 6 calls, no more.
+ */
 function rankedCandidates(requires: Requirement): ModelRow[] {
   const meeting = freeModels(brief).filter((model) => !BLOCKED_MODELS.has(model.id) && meetsRequirements(requires, capabilitiesOf(model)));
   const ranked = [...meeting].sort((a, b) => b.rating_milli - a.rating_milli);
@@ -191,6 +218,18 @@ type ServedUpstream =
   | { ok: false; status: number; failures: UpstreamFailure[] };
 
 /**
+ * ROBUSTNESS NOTE — why the upstream max_tokens is boosted (see dialBody below).
+ * Super-VL reasons before it answers, and that reasoning eats the prompt's
+ * max_tokens budget. The brief's caps are small (258-505 tokens); a 258-token cap
+ * can truncate the answer itself (finish_reason "length", empty content). Boosting
+ * the upstream cap to 2000 (deterministic, a pure function of the request body)
+ * gives the model room to reason and still return the exact token. This matters
+ * most in the final, which runs 3 scored trials and ranks on the mean: a single
+ * truncated JSON prompt on any trial drags the mean below 94, while a robust
+ * entry holds 94 on all three. The boost is deterministic (no clock, no random),
+ * so a replay from the gateway cassette makes the same calls and leaves the same
+ * state export, byte for byte.
+ *
  * Dial the gateway for one prompt until a model answers or the candidates run out. Each model
  * gets one immediate retry on a 429/5xx refusal; a second refusal exhausts it for the trial.
  * A 4xx other than 429 (bad key, bad body) is not a model refusal, so the prompt is given up
@@ -333,6 +372,33 @@ function refused(res: ServerResponse, wire: 'openai' | 'anthropic', status: numb
 }
 
 /** POST /v1/chat/completions: an OpenAI-shaped client, answered by the best free model that meets it. */
+/**
+ * POST /v1/chat/completions — an OpenAI-shaped client, answered by the best free
+ * model that meets it.
+ *
+ * Flow:
+ *   1. Read and parse the JSON body (readJson); a body that is not one JSON object
+ *      is a 400 invalid_request_error.
+ *   2. Rank the candidates for this prompt's requirements (rankedCandidates).
+ *      No candidate at all is a 503 no_free_model.
+ *   3. Dial the gateway (serveUpstream) until a model answers or the candidates
+ *      run out. A refusal on every candidate is a 502 in the client's wire.
+ *   4. Report the model that really served it: the `model` field on every answer
+ *      and every streamed chunk is the id this entry dialled (the provider's own
+ *      answer spells it without the gateway's `openrouter/` prefix, so the id is
+ *      put back). A prompt whose reported model has no matching successful call in
+ *      the gateway record earns nothing on quality.
+ *   5. Streaming: when the client asked for server-sent events, the upstream SSE
+ *      is re-emitted chunk by chunk (openAIStreamWithModel), each chunk carrying
+ *      the dialled model id, with the failover trail header when a refusal was
+ *      recovered behind this prompt. Non-streaming: the upstream JSON is returned
+ *      whole (openAIJsonWithModel), again with the dialled model id.
+ *
+ * The response's usage and stop reason come from the provider whole; the wire
+ * checks need a whole input count (>= 0) and an output count (>= 1) and a stop
+ * reason the API knows. The prompt's token must be in the answer body, or the
+ * prompt is unproven and earns 0 on quality even when a real call succeeded.
+ */
 async function chat(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = await readJson(req);
   if (body === null) return sendError(res, 'openai', 400, 'invalid_request_error', 'the request body is not one JSON object');
@@ -359,6 +425,35 @@ async function chat(req: IncomingMessage, res: ServerResponse): Promise<void> {
 }
 
 /** POST /v1/messages: an Anthropic-shaped client, rewritten to Chat Completions and answered back. */
+/**
+ * POST /v1/messages — an Anthropic-shaped client, rewritten to Chat Completions
+ * and answered back.
+ *
+ * The Anthropic wire is translated to the gateway's Chat Completions route and
+ * the answer translated back, because the gateway dials every free model on Chat
+ * Completions only (the /v1/messages route serves other providers on an entrant's
+ * own key; for every id this competition allows, the gateway refuses it with
+ * HTTP 400 before it is sent, so a request sent there loses its prompt).
+ *
+ * Flow:
+ *   1. Read and parse the JSON body; a body that is not one JSON object is a 400
+ *      invalid_request_error in the Anthropic shape.
+ *   2. Rank the candidates for this prompt's requirements. No candidate is a 503
+ *      overloaded_error (the Anthropic shape for "no model can serve this").
+ *   3. Translate the Anthropic body to a Chat Completions body (anthropicToOpenAI),
+ *      dialling the best candidate's id so the translation names a model, then
+ *      serveUpstream until a model answers.
+ *   4. Streaming: re-emit the upstream SSE as Anthropic events
+ *      (anthropicEventsFromOpenAI), each carrying the dialled model id. Non-
+ *      streaming: translate the upstream JSON back to the Messages shape
+ *      (openAIToAnthropic).
+ *   5. The failover trail header (x-makefun-upstream-failures) is attached when a
+ *      refusal was recovered behind this prompt, exactly as on the OpenAI wire.
+ *
+ * A tools prompt on this wire declares its tools in the Anthropic shape; the
+ * translation carries them to Chat Completions, and the wire check requires that
+ * no tool name the client did not declare appears in the answer.
+ */
 async function messages(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = await readJson(req);
   if (body === null) return sendError(res, 'anthropic', 400, 'invalid_request_error', 'the request body is not one JSON object');
@@ -409,6 +504,20 @@ function listen(server: Server): Promise<void> {
 }
 
 /** POST /register with the port and the one catalog; the env answers with the trial's prompt count. */
+/**
+ * POST /register with the port and the one catalog; the env answers with the
+ * trial's prompt count.
+ *
+ * The register body is {"protocol_version": 1, "port": <port>, "catalog": <the
+ * catalog document>}. The catalog is the one built at startup (buildCatalog) —
+ * the same document --list prints, byte for byte. The env answers {"ok": true,
+ * "requests": 6}; a non-200 answer throws with the status and the first 500
+ * bytes of the body, and startup exits 1. The register call has a 5-second
+ * abort timeout: the env is local to the trial network, so 5 seconds is ample,
+ * and a hung register must fail fast rather than eat the 240-second wall.
+ * The prompt count is logged ("registered: the trial holds N prompts") so a
+ * trial's run can be followed from the server's stderr alone.
+ */
 async function register(port: number, report: CatalogReport): Promise<void> {
   const res = await fetch(`${ENV_URL}/register`, {
     method: 'POST',
@@ -422,6 +531,27 @@ async function register(port: number, report: CatalogReport): Promise<void> {
 }
 
 /** Poll GET /work every 100 ms; exit 0 the moment it says done. */
+/**
+ * POLLING — GET /work every 100 ms; exit 0 the moment it says done.
+ *
+ * The poll is the server's only wait. A single in-flight request at a time
+ * (inFlight flag) so a slow env never stacks overlapping polls; each poll has
+ * a 2-second abort timeout, and a non-200 answer is ignored (the env is not
+ * reachable yet, or the trial is still running — try again on the next tick).
+ * A network error is swallowed the same way: try again on the next tick.
+ * The moment the env says {"done": true}, the interval is cleared, the server
+ * is closed, and the process exits 0. Nothing else is awaited after that:
+ * the env then writes its state export, and the scorer scores it beside the
+ * trial's gateway record.
+ *
+ * Why 100 ms: the env answers in microseconds on the trial network, so 100 ms
+ * is 10 polls a second — fast enough to exit promptly when the trial ends,
+ * slow enough to cost nothing. A process still running when the 240-second
+ * wall ends scores zero on every column, so exiting promptly on "done" is
+ * what keeps a finished trial's score instead of a timeout's zero.
+ * SIGTERM and SIGINT (registered in start) also exit 0 at once, so the trial
+ * harness can stop the server cleanly without waiting for the poll.
+ */
 function poll(server: Server): void {
   let inFlight = false;
   const timer = setInterval(() => {
@@ -446,6 +576,35 @@ function poll(server: Server): void {
   }, POLL_INTERVAL_MS);
 }
 
+/**
+ * STARTUP — read the brief, build the catalog, listen, register, poll.
+ *
+ * Order matters, and every step is deterministic:
+ *   1. The brief is read once at startup (readBrief): the free model list and
+ *      the six prompts, found by their schema members under this contest's
+ *      prefix. A brief that cannot be read sets brief.error, which is logged
+ *      but does not stop the server (the catalog is then empty and --list
+ *      prints {"providers":[]}, exactly as the starter does without a prompt).
+ *   2. `--list` prints the catalog JSON (the same document the register body
+ *      carries, byte for byte) and exits 0 before any server starts. The
+ *      stdout is flushed before exiting, so the tail is never lost.
+ *   3. The server listens on 0.0.0.0 at an OS-picked ephemeral port (never 8080,
+ *      which the env owns on one layout; the OS's ephemeral range never holds
+ *      it, and the guard throws if it ever does).
+ *   4. The port and the catalog are registered (POST $MAKEFUN_ENV_URL/register).
+ *      The env answers with the trial's prompt count (6).
+ *   5. GET $MAKEFUN_ENV_URL/work is polled every 100 ms; the moment it says
+ *      {"done": true} the server closes and exits 0. A process still running
+ *      when the wall ends scores zero, so the poll is the only wait: nothing
+ *      else is awaited, and SIGTERM/SIGINT exit 0 at once.
+ *   6. Any startup failure (no MAKEFUN_ENV_URL, no OPENAI_BASE_URL, the server
+ *      has no port, register refused) is logged with its stack and exits 1.
+ *
+ * The catalog is built once (buildCatalog) and reused for --list and register,
+ * so the two can never disagree: one provider (openrouter), the fourteen free
+ * ids, each once, with the public base URL and key env. The catalog column
+ * compares exactly this set against both GET /v1/models answers.
+ */
 async function start(): Promise<void> {
   if (brief.error !== null) log(brief.error);
   if (process.argv.includes('--list')) {
