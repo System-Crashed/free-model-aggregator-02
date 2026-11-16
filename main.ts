@@ -292,6 +292,28 @@ function failuresHeader(failures: UpstreamFailure[]): Record<string, string> {
 }
 
 /** The requirements of the prompt now arriving: the brief's row by arrival order, else the body's own. */
+/**
+ * requirementsFor — read a prompt's requirements from its own request body.
+ *
+ * Routing is capability-based, so the requirements come from the request
+ * itself, never from a prompt id or a trial number:
+ *   - tools: the body declares a non-empty `tools` array (a tools prompt).
+ *   - vision: the body carries an image part in its messages (a vision prompt).
+ *   - json: the body sets `response_format` with type "json_object" or
+ *     "json_schema" (a JSON-mode prompt), or carries a system instruction that
+ *     demands a JSON object. Only JSON-capable models are candidates for
+ *     these prompts.
+ *   - min_context: the body's token budget (the longest message) must fit the
+ *     model's context window; every free model here has at least 32k, and no
+ *     prompt approaches that, so this never filters in practice — it is kept
+ *     as a guard so a future brief with a long prompt cannot route to a model
+ *     that would refuse it on context length.
+ *
+ * The JSON-mode prompts move between trials (t0: p01/p04, t1/t2: p04/p06),
+ * so a router that keyed on prompt ids would serve the wrong model on the
+ * wrong trial. Reading the body's own requirements makes the routing correct
+ * on every trial, including the scored instances the brief does not name.
+ */
 function requirementsFor(body: Json): Requirement {
   const entry = brief.prompts[manifestIndex];
   manifestIndex += 1;
